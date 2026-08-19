@@ -38,6 +38,15 @@ export interface Timings {
 	panelMs: number;
 	/** How long to wait for the transcript control to appear after expanding the description. */
 	expandMs: number;
+	/**
+	 * How long to wait for the page to render a control at all.
+	 *
+	 * The player response is in the initial HTML; everything below the player is built after,
+	 * and a guest that is laid out but not shown is in no hurry about it — measured at ~2s
+	 * visible against ~12s hidden for the same video. Reading the state captured at first
+	 * sight is how a page that was merely slow gets reported as a page with no button.
+	 */
+	controlMs: number;
 	/** Pause before trying again when something was covering the control. */
 	retryMs: number;
 }
@@ -47,6 +56,7 @@ const DEFAULT_TIMINGS: Timings = {
 	pollMs: 250,
 	panelMs: 6_000,
 	expandMs: 5_000,
+	controlMs: 25_000,
 	retryMs: 500,
 };
 
@@ -199,6 +209,17 @@ async function openPanel(
 	timings: Timings,
 	signal?: AbortSignal,
 ): Promise<void> {
+	// Nothing rendered yet is not the same as nothing to find. Only after waiting is "no
+	// button" a claim about the page rather than about how early it was asked.
+	if (state.target === "none") {
+		const appeared = await until(
+			() => runScript(view, describe),
+			(next) => next.target !== "none",
+			{ timeoutMs: timings.controlMs, intervalMs: timings.pollMs, signal },
+		);
+		state = appeared.value;
+	}
+
 	let target: Target = state.target;
 
 	if (target === "expander") {

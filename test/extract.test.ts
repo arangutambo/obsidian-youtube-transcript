@@ -20,6 +20,7 @@ const QUICK: Timings = {
 	panelMs: 120,
 	expandMs: 120,
 	retryMs: 5,
+	controlMs: 120,
 };
 
 function run(options: FakeOptions = {}, extra: { onProgress?: (stage: Stage) => void } = {}) {

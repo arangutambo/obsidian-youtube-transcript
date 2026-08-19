@@ -40,7 +40,11 @@ function find() {
 	var section = document.querySelector("ytd-video-description-transcript-section-renderer");
 	if (section) {
 		var direct = section.querySelector("button, tp-yt-paper-button");
-		if (direct) return { kind: "transcript", el: direct };
+		// Visible, or it is not the route. The section is in the DOM from first paint, inside
+		// a structured-description panel that is ENGAGEMENT_PANEL_VISIBILITY_HIDDEN until the
+		// description is expanded — so an unguarded match here reports a control that exists,
+		// measures 0x0 at (0, 0), and takes the caller straight past the expander it needed.
+		if (direct && direct.offsetParent !== null) return { kind: "transcript", el: direct };
 	}
 
 	var labelled = Array.prototype.slice.call(document.querySelectorAll(
@@ -52,6 +56,15 @@ function find() {
 		if (label.indexOf("close") !== -1) return false;
 		return node.offsetParent !== null;
 	});
+
+	// Prefer the control that says it shows the transcript. A page with chapters carries other
+	// controls whose name merely mentions one — and clicking those opens "In this video",
+	// which is a panel that never populates and looks exactly like a transcript that failed.
+	for (var i = 0; i < labelled.length; i++) {
+		var name = (labelled[i].getAttribute("aria-label") || "").toLowerCase();
+		if (name.indexOf("show transcript") !== -1) return { kind: "transcript", el: labelled[i] };
+	}
+
 	if (labelled.length) return { kind: "transcript", el: labelled[0] };
 
 	var expander = document.querySelector(
@@ -60,6 +73,49 @@ function find() {
 	if (expander && expander.offsetParent !== null) return { kind: "expander", el: expander };
 
 	return { kind: "none", el: null };
+}
+`;
+
+/**
+ * What a transcript segment is called, old and new.
+ *
+ * YouTube replaced the Polymer `ytd-transcript-segment-renderer` with a view-model element in
+ * the rewritten panel. Both are listed because a build serving the old one is not hypothetical
+ * — it is what every published version of this library was written against — and matching both
+ * costs nothing.
+ */
+const SEGMENTS = "transcript-segment-view-model, ytd-transcript-segment-renderer";
+
+/**
+ * The transcript's engagement panel, whatever this build calls it.
+ *
+ * It was `engagement-panel-searchable-transcript`; it is now `PAmodern_transcript_view`. Since
+ * the only thing both have in common is the word, that is what gets matched — an expanded panel
+ * for preference, so a build that keeps a hidden legacy panel around does not win over the one
+ * that actually opened.
+ */
+const PANEL = `
+function transcriptPanel() {
+	var panels = document.querySelectorAll("ytd-engagement-panel-section-list-renderer");
+	var fallback = null;
+
+	for (var i = 0; i < panels.length; i++) {
+		var id = (panels[i].getAttribute("target-id") || "").toLowerCase();
+		if (id.indexOf("transcript") === -1) continue;
+
+		// A page with chapters carries a second panel under the *same* target-id whose header
+		// reads "In this video". The id cannot tell them apart, so the header does — and the
+		// page is loaded with hl=en precisely so that header is in a known language.
+		var header = panels[i].querySelector("h2#title, #title-text");
+		var name = header ? (header.textContent || "").toLowerCase() : "";
+		if (name !== "" && name.indexOf("transcript") === -1) continue;
+
+		var state = panels[i].getAttribute("visibility") || "";
+		if (state.indexOf("EXPANDED") !== -1) return panels[i];
+		if (!fallback) fallback = panels[i];
+	}
+
+	return fallback;
 }
 `;
 
@@ -105,9 +161,7 @@ export const describe: PageScript<PageState> = script(
 
 	var details = (r && r.videoDetails) || {};
 	var status = (r && r.playabilityStatus) || {};
-	var panel = document.querySelector(
-		'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
-	);
+	var panel = transcriptPanel();
 	var found = find();
 
 	return JSON.stringify({
@@ -127,11 +181,11 @@ export const describe: PageScript<PageState> = script(
 			return { languageCode: t.languageCode || "", name: name, auto: t.kind === "asr" };
 		}),
 		panel: panel ? (panel.getAttribute("visibility") || "") : null,
-		segments: document.querySelectorAll("ytd-transcript-segment-renderer").length,
+		segments: document.querySelectorAll("${SEGMENTS}").length,
 		target: found.kind
 	});
 	`,
-	FIND,
+	FIND + PANEL,
 );
 
 export interface Focus {
@@ -171,6 +225,8 @@ export type Aim =
 		clear: boolean;
 		/** What was on top, when something was. For the error message. */
 		onTop: string;
+		/** The control being aimed at, named. For the error message, and for a log. */
+		control: string;
 	};
 
 /**
@@ -191,19 +247,27 @@ export const aim: PageScript<Aim> = script(
 	var cx = box.left + box.width / 2;
 	var cy = box.top + box.height / 2;
 
-	var hit = document.elementFromPoint(cx, cy);
-	var clear = !!hit && (hit === el || el.contains(hit) || hit.contains(el));
+	// A control with no area has no coordinate that hits it: (0, 0) is not "the top left of
+	// the button", it is whatever happens to be in the corner of the page.
+	var hasArea = box.width > 0 && box.height > 0;
+
+	var hit = hasArea ? document.elementFromPoint(cx, cy) : null;
+	var clear = hasArea && !!hit && (hit === el || el.contains(hit) || hit.contains(el));
+
+	var label = el.getAttribute("aria-label") || "";
+	var own = (el.textContent || "").replace(/\\s+/g, " ").trim();
 
 	return JSON.stringify({
 		found: true,
 		kind: found.kind,
+		control: el.tagName.toLowerCase() + (label ? " [" + label + "]" : "") + (own ? " '" + own.slice(0, 40) + "'" : ""),
 		x: cx,
 		y: cy,
 		width: box.width,
 		height: box.height,
 		inView: box.width > 0 && box.height > 0 && box.top >= 0 && box.bottom <= (window.innerHeight || 0),
 		clear: clear,
-		onTop: hit ? hit.tagName.toLowerCase() + (hit.id ? "#" + hit.id : "") : ""
+		onTop: hasArea ? (hit ? hit.tagName.toLowerCase() + (hit.id ? "#" + hit.id : "") : "") : "(the control has no size)"
 	});
 	`,
 	FIND,
@@ -222,13 +286,14 @@ export interface RawSegment {
  *
  * Two sources of timing because builds differ: `data-start-ms` is exact when it is there, and
  * the printed clock is always there but only to the second. Preferring the attribute costs
- * nothing and keeps sub-second cues honest where they exist.
+ * nothing and keeps sub-second cues honest where they exist — the rewritten panel carries no
+ * attribute at all, so there the printed clock is the only timing on offer.
  */
 export const read: PageScript<RawSegment[]> = script(
 	"read",
 	`
 	var out = [];
-	var nodes = document.querySelectorAll("ytd-transcript-segment-renderer");
+	var nodes = document.querySelectorAll("${SEGMENTS}");
 
 	for (var i = 0; i < nodes.length; i++) {
 		var node = nodes[i];
@@ -236,12 +301,27 @@ export const read: PageScript<RawSegment[]> = script(
 		var raw = seg.getAttribute("data-start-ms") || node.getAttribute("data-start-ms");
 		var ms = raw === null || raw === undefined || raw === "" ? null : Number(raw);
 
-		var stampNode = node.querySelector(".segment-timestamp");
-		var textNode = node.querySelector(".segment-text");
+		var stampNode = node.querySelector(".segment-timestamp, .ytwTranscriptSegmentViewModelTimestamp");
+		// The rewritten segment has no .segment-text — the words are an attributed-string span
+		// carrying role="text" — and beside the printed clock sits a screen-reader label
+		// spelling it out ("1 second"), which must not be read as part of what was said.
+		var textNode = node.querySelector(".segment-text, [role='text'], .ytAttributedStringHost");
 		var stamp = ((stampNode && stampNode.textContent) || "").trim();
-		var text = (((textNode && textNode.textContent) || node.textContent) || "").replace(/\\s+/g, " ").trim();
 
-		// Without .segment-text the stamp is glued to the front of the node's text.
+		var text;
+		if (textNode) {
+			text = (textNode.textContent || "").replace(/\\s+/g, " ").trim();
+		} else {
+			// Nothing to point at: take the whole segment minus the parts that are not speech.
+			var clone = node.cloneNode(true);
+			var drop = clone.querySelectorAll(
+				".segment-timestamp, .ytwTranscriptSegmentViewModelTimestamp, .ytwTranscriptSegmentViewModelTimestampA11yLabel"
+			);
+			for (var d = 0; d < drop.length; d++) drop[d].parentNode.removeChild(drop[d]);
+			text = (clone.textContent || "").replace(/\\s+/g, " ").trim();
+		}
+
+		// Without a text node of its own the stamp is glued to the front of the node's text.
 		if (stamp && text.indexOf(stamp) === 0) text = text.slice(stamp.length).trim();
 		if (text === "") continue;
 

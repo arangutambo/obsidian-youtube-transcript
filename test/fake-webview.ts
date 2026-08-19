@@ -149,6 +149,7 @@ export class FakeWebview implements WebviewLike {
 		return {
 			found: true,
 			kind: target,
+			control: target === "expander" ? 'tp-yt-paper-button [Show more]' : 'button [Show transcript]',
 			x: rect.x + rect.width / 2,
 			y: rect.y + rect.height / 2,
 			width: rect.width,

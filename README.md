@@ -100,15 +100,52 @@ If `no-button` starts appearing, that file is the only one to look at.
 
 ## Verifying it against a real video
 
-The test suite covers the sequence, not YouTube. To check the real thing, open Obsidian's
-developer console (`Cmd-Opt-I`) in a vault with the plugin loaded and run the extraction with
-`visible: true` — you will see the description expand and the panel open, which is the whole
-mechanism, visibly.
+The test suite covers the sequence, not YouTube. Against the live site there is one procedure,
+and it is the only thing that settles whether the selectors still match.
+
+`require("obsidian-youtube-transcript")` in Obsidian's console does **not** work: the package is
+not resolvable by name from the renderer, and it is ESM, so `require` of it throws
+`ERR_REQUIRE_ESM` even by absolute path. Bundle the harness in [`tools/verify.ts`](tools/verify.ts)
+to CJS instead, and the console paste is two lines:
+
+```bash
+npx esbuild tools/verify.ts --bundle --format=cjs --platform=browser --external:fs --outfile=tools/verify.cjs
+```
 
 ```ts
-const { fetchTranscript } = require("obsidian-youtube-transcript");
-await fetchTranscript("https://youtu.be/<id>", { visible: true, onProgress: console.log });
+// Obsidian's developer console, Cmd-Opt-I. Absolute path; `require` caches, so clear it
+// between builds or you will keep testing the bundle you replaced.
+Object.keys(require.cache).filter(k => k.includes("verify.cjs")).forEach(k => delete require.cache[k]);
+await require("/absolute/path/to/tools/verify.cjs").verify("<video id>", { visible: true });
 ```
+
+It writes `/tmp/youtube-transcript-verify.json`, which is the point: a failure there carries the
+page's own account of itself — which of the three routes in `page.ts` matched, what the control's
+accessible name and rect were, which engagement panels exist and what their headers say, and what
+a segment node is actually built out of. That is enough to fix a selector without a second run,
+which matters when a run costs a minute.
+
+`visible: true` for the first run of a partition, both because a consent decision needs answering
+by hand and because a hidden guest is laid out far more lazily — measured at roughly 2s to render
+the description controls visible against 12s hidden, for the same video. That is why `controlMs`
+is generous.
+
+## What is actually verified
+
+Against live YouTube from inside Obsidian 1.13.7 (Electron 34.3.0), on 19 August 2026:
+
+- **The mechanism works.** A trusted `sendInputEvent` click opens the panel, and real cues come
+  back — 24 from a 3:33 video, 143 from a 19-minute one, correctly timed and complete to the end
+  of the video. Nothing about the approach is in doubt.
+- **It is not yet reliable.** Two of seven videos tested succeeded. The rest fail at
+  `no-segments` or `panel-never-opened`: the control is found, aimed at and clicked — `aim`
+  reports `button [Show transcript]`, in view and unobstructed — and the transcript panel stays
+  `VISIBILITY_HIDDEN` while a **decoy panel sharing the same `target-id`**, headed "In this
+  video", opens instead and never populates.
+
+So this reads a transcript; it does not yet read *a* transcript reliably enough to put behind a
+command. The open question is what the "Show transcript" click actually activates on a video with
+chapters, which is where every failure so far has been.
 
 ## Using it from Democratised Read It Later
 

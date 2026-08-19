@@ -6,3 +6,6 @@ dist/
 data.json
 
 .DS_Store
+
+# Built verification harness, not shipped.
+tools/verify.cjs
