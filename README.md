@@ -132,20 +132,39 @@ is generous.
 
 ## What is actually verified
 
-Against live YouTube from inside Obsidian 1.13.7 (Electron 34.3.0), on 19 August 2026:
+Against live YouTube from inside Obsidian 1.13.7 (Electron 34.3.0), 19 August 2026.
 
-- **The mechanism works.** A trusted `sendInputEvent` click opens the panel, and real cues come
-  back — 24 from a 3:33 video, 143 from a 19-minute one, correctly timed and complete to the end
-  of the video. Nothing about the approach is in doubt.
-- **It is not yet reliable.** Two of seven videos tested succeeded. The rest fail at
-  `no-segments` or `panel-never-opened`: the control is found, aimed at and clicked — `aim`
-  reports `button [Show transcript]`, in view and unobstructed — and the transcript panel stays
-  `VISIBILITY_HIDDEN` while a **decoy panel sharing the same `target-id`**, headed "In this
-  video", opens instead and never populates.
+**The mechanism works.** A trusted `sendInputEvent` click opens the panel and real cues come
+back — 24 from a 3:33 video, 143 from a 19-minute one, correctly timed and complete to the end.
+Nothing about the approach is in doubt.
 
-So this reads a transcript; it does not yet read *a* transcript reliably enough to put behind a
-command. The open question is what the "Show transcript" click actually activates on a video with
-chapters, which is where every failure so far has been.
+**But it only works for one of the two kinds of video**, and which kind you get is YouTube's
+choice, not yours:
+
+- Some videos **carry the transcript in the watch page already**. The panel is
+  `PAmodern_transcript_view`, it fills from data that is in the DOM, and reading it works every
+  time.
+- The rest **fetch it**, and that fetch is gated. Clicking "Show transcript" makes the page issue
+  `POST /youtubei/v1/get_transcript`, which answers:
+
+  ```json
+  { "error": { "code": 400, "message": "Precondition check failed.",
+               "status": "FAILED_PRECONDITION" } }
+  ```
+
+  The panel then spins for ever. This is the same wall as `timedtext`, one door further in: the
+  click is not the problem, and no selector fixes it, because the page's own request is being
+  refused. Confirmed by reading the guest webview's network directly.
+
+Things that were tried and did not move it: warming the session on the home page first; a fresh
+persistent partition; presenting a plain Chrome user agent instead of Obsidian's. The user agent
+change is kept anyway — Obsidian's string carries `obsidian/…` and `Electron/…` tokens that have
+no business in an ordinary request — but it is not the fix, and one run that appeared to succeed
+under it did not reproduce.
+
+So: **2 of 7 videos**, and the boundary is which panel variant YouTube serves rather than
+anything in this code. Worth re-measuring occasionally — the split may move, and heavy testing
+from one address may itself attract stricter gating.
 
 ## Using it from Democratised Read It Later
 

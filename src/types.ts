@@ -34,6 +34,16 @@ export interface WebviewLike {
 	setAudioMuted?(muted: boolean): void;
 	/** Present on a real webview. Used to stop a page that is still loading when disposed. */
 	stop?(): void;
+	/**
+	 * Present on a real webview, and the only thing that reliably sets the user agent.
+	 *
+	 * The `useragent` attribute is honoured for navigations that begin after the guest exists,
+	 * which the initial `src` load does not — so it is set here, on the live guest, and the
+	 * real page is loaded afterwards.
+	 */
+	setUserAgent?(userAgent: string): void;
+	/** Present on a real webview. Navigating after attachment, rather than through `src`. */
+	loadURL?(url: string): Promise<void>;
 	addEventListener(type: string, listener: (event?: unknown) => void): void;
 	removeEventListener(type: string, listener: (event?: unknown) => void): void;
 }

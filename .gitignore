@@ -9,3 +9,4 @@ data.json
 
 # Built verification harness, not shipped.
 tools/verify.cjs
+tools/probe.cjs

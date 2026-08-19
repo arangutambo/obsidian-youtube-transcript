@@ -25,6 +25,13 @@ export interface HostOptions {
 	visible?: boolean;
 	/** How long to wait for `dom-ready` before giving up. */
 	readyTimeoutMs?: number;
+	/**
+	 * The user agent the guest presents.
+	 *
+	 * Defaults to Obsidian's own string with its `obsidian/…` and `Electron/…` tokens removed,
+	 * which is what makes `get_transcript` answer at all. Set it to override that.
+	 */
+	userAgent?: string;
 }
 
 export interface Host {
@@ -35,6 +42,33 @@ export interface Host {
 /** Wide enough for the desktop layout, which is the only one with a transcript control. */
 const WIDTH = 1280;
 const HEIGHT = 800;
+
+/**
+ * The user agent, with the parts that are not a browser taken out.
+ *
+ * Obsidian identifies itself as `obsidian/1.8.9 … Chrome/132.0.6834.210 Electron/34.3.0`, and
+ * those two extra tokens are load-bearing in the worst way: with them, YouTube's own
+ * `get_transcript` call answers `400 FAILED_PRECONDITION` and the transcript panel spins for
+ * ever. Take them out and the same request returns 200 with the whole transcript in it —
+ * measured, on a video that returned nothing at all beforehand.
+ *
+ * This is not pretending to be something else. The engine really is Chrome 132; the tokens
+ * removed are the ones describing the application wrapped around it, and what remains is the
+ * truth about what is rendering the page. It is derived from the real string rather than
+ * hard-coded so the Chrome version stays honest as Obsidian updates.
+ */
+function browserUserAgent(): string | undefined {
+	if (typeof navigator === "undefined") return undefined;
+
+	const real = navigator.userAgent;
+	const stripped = real
+		.replace(/\s*obsidian\/[\d.]+/i, "")
+		.replace(/\s*Electron\/[\d.]+/i, "")
+		.replace(/\s{2,}/g, " ")
+		.trim();
+
+	return stripped === real ? undefined : stripped;
+}
 
 /**
  * Whether this build of Obsidian can host a webview at all.
@@ -63,11 +97,20 @@ export async function openHost(url: string, options: HostOptions = {}): Promise<
 	const height = options.height ?? HEIGHT;
 
 	const element = document.createElement("webview");
-	element.setAttribute("src", url);
 	element.setAttribute("allowpopups", "false");
 	// Stops a hidden guest from streaming the video it was never asked to play.
 	element.setAttribute("webpreferences", "autoplayPolicy=document-user-activation-required");
 	if (options.partition) element.setAttribute("partition", options.partition);
+
+	const userAgent = options.userAgent ?? browserUserAgent();
+	if (userAgent) element.setAttribute("useragent", userAgent);
+
+	// Blank first, then the real page. The `useragent` attribute is quietly ignored for the
+	// load that attaching the element starts, so a guest created with its `src` already set
+	// fetches the watch page under Obsidian's own user agent whatever the attribute says —
+	// verified by reading `navigator.userAgent` inside the guest. Setting it on the live
+	// guest and navigating afterwards is the only order that actually takes.
+	element.setAttribute("src", "about:blank");
 
 	style(element, options, width, height);
 
@@ -76,8 +119,20 @@ export async function openHost(url: string, options: HostOptions = {}): Promise<
 
 	const view = element as unknown as WebviewLike;
 
+	const timeout = options.readyTimeoutMs ?? 30_000;
+
 	try {
-		await ready(view, options.readyTimeoutMs ?? 30_000);
+		// about:blank, which is what makes the guest real enough to configure.
+		await ready(view, timeout);
+
+		if (userAgent) view.setUserAgent?.(userAgent);
+
+		// Listen before navigating: `dom-ready` for a fast page can arrive before a listener
+		// attached afterwards would exist.
+		const loaded = ready(view, timeout);
+		if (view.loadURL) void view.loadURL(url).catch(() => undefined);
+		else element.setAttribute("src", url);
+		await loaded;
 	} catch (error) {
 		element.remove();
 		throw error;
