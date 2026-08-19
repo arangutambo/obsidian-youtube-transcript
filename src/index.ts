@@ -19,7 +19,8 @@
 export { type CaptionTrack, clockOf, type Cue, type Paragraph, parseClock, type Transcript, toParagraphs, toPlainText, toVtt } from "./cues.js";
 export { isTranscriptError, TranscriptError, type TranscriptFailure } from "./errors.js";
 export { type ExtractOptions, fetchTranscript, readTranscript, type Timings } from "./extract.js";
-export { type Host, type HostOptions, openHost, webviewsAvailable } from "./host.js";
-export { isVideoUrl, videoIdFrom, watchUrl } from "./id.js";
+export { type Host, type HostOptions, navigate, openHost, webviewsAvailable } from "./host.js";
+export { homeUrl, isVideoUrl, videoIdFrom, watchUrl } from "./id.js";
+export { type InnertubeResult, playerScript, readViaInnertube } from "./innertube.js";
 export { trustedClick } from "./trusted.js";
 export type { MouseInput, Stage, WebviewLike } from "./types.js";

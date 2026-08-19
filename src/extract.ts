@@ -15,8 +15,9 @@
 
 import { type Cue, parseClock, type Transcript } from "./cues.js";
 import { TranscriptError } from "./errors.js";
-import { type Host, type HostOptions, openHost } from "./host.js";
-import { videoIdFrom, watchUrl } from "./id.js";
+import { type Host, type HostOptions, navigate, openHost } from "./host.js";
+import { homeUrl, videoIdFrom, watchUrl } from "./id.js";
+import { readViaInnertube } from "./innertube.js";
 import { aim, describe, focus, type PageState, read, runScript, type Target } from "./page.js";
 import { trustedClick } from "./trusted.js";
 import type { Stage, WebviewLike } from "./types.js";
@@ -62,6 +63,19 @@ const DEFAULT_TIMINGS: Timings = {
 
 export interface ExtractOptions extends HostOptions {
 	signal?: AbortSignal;
+	/**
+	 * How to get the transcript.
+	 *
+	 * `innertube` asks YouTube's player API from inside the page, which is fast, needs no
+	 * clicking, and returns millisecond timings. `panel` is the original route — open the
+	 * transcript panel with a trusted click and read the rendered segments — which is still
+	 * here because it reads what a person would see, and because a route that depends on an
+	 * undocumented client is worth having a second opinion on. `auto` tries the first and
+	 * falls back to the second.
+	 */
+	strategy?: "auto" | "innertube" | "panel";
+	/** Preferred caption language, as a code like `en`. Defaults to whatever YouTube lists first. */
+	language?: string;
 	onProgress?: (stage: Stage) => void;
 	/** How long to spend waiting for the transcript to finish rendering. */
 	timeoutMs?: number;
@@ -85,22 +99,54 @@ export async function fetchTranscript(input: string, options: ExtractOptions = {
 		throw new TranscriptError("load-failed", `Not a YouTube video: ${input}`);
 	}
 
+	const strategy = options.strategy ?? "auto";
 	options.onProgress?.("loading");
+
+	// The caption request works from any youtube.com document, so start on the lightest one.
+	// Only a fallback pays for the watch page.
+	const start = strategy === "panel" ? watchUrl(videoId) : homeUrl();
 
 	let host: Host;
 	try {
-		host = await openHost(watchUrl(videoId), options);
+		host = await openHost(start, options);
 	} catch (error) {
 		throw error instanceof TranscriptError
 			? error
-			: new TranscriptError("load-failed", "The watch page would not open.", String(error));
+			: new TranscriptError("load-failed", "YouTube would not open.", String(error));
 	}
 
 	try {
-		return await readTranscript(host.view, videoId, options);
+		if (strategy !== "panel") {
+			options.onProgress?.("reading-page");
+
+			try {
+				const transcript = await readViaInnertube(host.view, videoId, options.language);
+				options.onProgress?.("done");
+				return transcript;
+			} catch (error) {
+				if (strategy === "innertube" || !worthRetrying(error)) throw error;
+			}
+
+			// Falling back: the panel needs the watch page itself.
+			await navigate(host, watchUrl(videoId), options.readyTimeoutMs);
+		}
+
+		return await readTranscript(host.view, videoId, { ...options, strategy: "panel" });
 	} finally {
 		host.dispose();
 	}
+}
+
+/**
+ * Whether the panel is worth trying after the caption request failed.
+ *
+ * A video with no captions has none either way, and an account wall is an account wall — those
+ * are answers, not failures, and clicking at them for thirty seconds changes nothing. Anything
+ * else might be this route being refused rather than the transcript being absent.
+ */
+function worthRetrying(error: unknown): boolean {
+	if (!(error instanceof TranscriptError)) return true;
+	return error.reason !== "no-captions" && error.reason !== "sign-in-required" && error.reason !== "cancelled";
 }
 
 /**
@@ -119,6 +165,19 @@ export async function readTranscript(
 	const signal = options.signal;
 
 	options.onProgress?.("reading-page");
+
+	// A caller with their own webview showing the video is on youtube.com too, so the fast
+	// route is available to them as well.
+	if ((options.strategy ?? "auto") !== "panel") {
+		try {
+			const transcript = await readViaInnertube(view, videoId, options.language);
+			options.onProgress?.("done");
+			return transcript;
+		} catch (error) {
+			if (options.strategy === "innertube" || !worthRetrying(error)) throw error;
+		}
+	}
+
 	const state = await settledPage(view, timeoutMs, timings, signal);
 
 	refuseUnreadable(state);

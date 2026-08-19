@@ -153,6 +153,24 @@ export async function openHost(url: string, options: HostOptions = {}): Promise<
 	};
 }
 
+/**
+ * Send an already-open guest somewhere else.
+ *
+ * Used to fall back: the caption request works from any youtube.com document, so the guest
+ * starts on the lightest one there is, and only a video that needs the transcript panel pays
+ * for loading the watch page.
+ */
+export async function navigate(host: Host, url: string, timeoutMs = 30_000): Promise<void> {
+	if (!host.view.loadURL) {
+		throw new TranscriptError("load-failed", "This webview cannot be navigated.");
+	}
+
+	// Listen before navigating; a cached page can be ready before a later listener exists.
+	const loaded = ready(host.view, timeoutMs);
+	void host.view.loadURL(url).catch(() => undefined);
+	await loaded;
+}
+
 function style(element: HTMLElement, options: HostOptions, width: number, height: number): void {
 	if (options.parent) {
 		// The caller placed it; they own how it looks.

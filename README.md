@@ -6,32 +6,61 @@ trusted Electron input.
 No undocumented endpoint, no token forgery, no third-party service. It opens the page you would
 have opened, clicks the button you would have clicked, and reads the panel that appears.
 
-## Why it works this way
+## How it works
 
-Three findings, in the order they closed off the alternatives.
+The transcript is fetched by asking YouTube's own player API for the caption track, from inside
+a real youtube.com page running in an Obsidian webview. No clicking, no scraping, no undocumented
+endpoint reached from outside the browser.
 
-**`timedtext` is gated.** YouTube's caption endpoint now requires a proof-of-origin token. This
-was tested rather than assumed: the request was issued from inside the watch page itself,
-same-origin, with the session's own cookies, in a real browser. It still returned zero bytes.
-That is not a headers problem, and no amount of request shaping fixes it. Every library that
-fetches captions from that endpoint is knocking on the same closed door.
+Getting there meant walking into three walls, and the shape of them is the design.
 
-**The transcript is in the page.** The engagement panel is right there in the DOM —
-`ytd-transcript-segment-renderer`, one node per phrase, timestamp included.
+**`timedtext` is gated.** The watch page's caption URLs carry `exp=xpe`, meaning a proof-of-origin
+token is required. Fetch one without it — same-origin, from inside the watch page, with the
+session's own cookies — and it answers `200` with a zero-byte body. Every library that fetches
+captions from that URL is knocking on that door.
 
-**A synthetic click will not open it.** `element.click()` and a hand-built `MouseEvent` arrive
-with `isTrusted === false`, because only the browser may set that flag. YouTube's handler checks
-it. Dispatch a synthetic click at "Show transcript" and the panel stays `VISIBILITY_HIDDEN` —
-silently, with no error anywhere.
+**So is the transcript panel.** Clicking "Show transcript" makes the page issue
+`POST /youtubei/v1/get_transcript`, which on most videos answers:
 
-Which is the specification for the fix. Electron's `webContents.sendInputEvent()` originates
-input in the browser process, so the page receives it as real input and a page script cannot
-forge it. That is [`src/trusted.ts`](src/trusted.ts), and it is the only interesting line in the
-library:
-
-```ts
-await view.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+```json
+{ "error": { "code": 400, "message": "Precondition check failed.",
+             "status": "FAILED_PRECONDITION" } }
 ```
+
+The panel then spins for ever. This was diagnosed by attaching to the guest webview as its own
+debugging target and reading its network — not inferred. Opening the panel with a genuinely
+trusted click works fine; it is what happens next that fails.
+
+**But the player answers a different client.** The same `/youtubei/v1/player` request, made as
+the iOS client, comes back `OK` with caption URLs that carry no `exp=xpe` at all. They fetch in
+full, first time, for every video tried. `ANDROID_VR`, `TVHTML5_SIMPLY_EMBEDDED_PLAYER`,
+`WEB_EMBEDDED_PLAYER` and `MWEB` were tried against the same video and all returned
+`ERROR`/`UNPLAYABLE` with no tracks.
+
+The part that cannot be dropped is *where the request is made from*. It runs inside a real
+youtube.com document, so it is same-origin — no CORS, the session's own cookies, YouTube's own
+API key read out of `ytcfg`. The same request from Node is a cross-origin request from an unknown
+client, which is what is being refused everywhere else. **The webview is still load-bearing. It
+just no longer has to be clicked.**
+
+Measured end to end, through `fetchTranscript`, on a hidden webview: **7 of 7 videos, averaging
+2.4 seconds each** — 61 cues from a 3:33 video, 992 from a sewing tutorial, 98–100% coverage
+throughout. `json3` gives millisecond timings, so the cues are finer than the rendered panel's.
+
+## The panel is still here
+
+`strategy: "panel"` opens the transcript with a trusted `sendInputEvent` click and reads
+`transcript-segment-view-model` nodes out of the DOM. It is the fallback when the caption request
+is refused, and `auto` — the default — tries the fast route and falls back to it.
+
+It is kept for two reasons. It reads what a person would actually see, which is a real check on
+the other route. And a path that depends on an undocumented client is worth having a second
+opinion on, because the day the iOS client stops answering is a day this still needs to work.
+
+A synthetic `.click()` will not do it: `element.click()` arrives with `isTrusted === false` and
+YouTube's handler ignores it, so the panel stays `VISIBILITY_HIDDEN` silently. Electron's
+`sendInputEvent` originates the event in the browser process, which a page script cannot forge.
+That is [`src/trusted.ts`](src/trusted.ts).
 
 ## Requirements
 
@@ -55,6 +84,9 @@ const transcript = await fetchTranscript("https://youtu.be/dQw4w9WgXcQ", {
     // A persistent partition means a consent answer is given once, not every time.
     partition: "persist:youtube-transcript",
     onProgress: (stage) => console.log(stage),
+    // "auto" (default) asks the player API and falls back to the panel; "innertube" or
+    // "panel" pin it to one route.
+    strategy: "auto",
 });
 
 transcript.title;    // "Never Gonna Give You Up"
@@ -129,42 +161,6 @@ which matters when a run costs a minute.
 by hand and because a hidden guest is laid out far more lazily — measured at roughly 2s to render
 the description controls visible against 12s hidden, for the same video. That is why `controlMs`
 is generous.
-
-## What is actually verified
-
-Against live YouTube from inside Obsidian 1.13.7 (Electron 34.3.0), 19 August 2026.
-
-**The mechanism works.** A trusted `sendInputEvent` click opens the panel and real cues come
-back — 24 from a 3:33 video, 143 from a 19-minute one, correctly timed and complete to the end.
-Nothing about the approach is in doubt.
-
-**But it only works for one of the two kinds of video**, and which kind you get is YouTube's
-choice, not yours:
-
-- Some videos **carry the transcript in the watch page already**. The panel is
-  `PAmodern_transcript_view`, it fills from data that is in the DOM, and reading it works every
-  time.
-- The rest **fetch it**, and that fetch is gated. Clicking "Show transcript" makes the page issue
-  `POST /youtubei/v1/get_transcript`, which answers:
-
-  ```json
-  { "error": { "code": 400, "message": "Precondition check failed.",
-               "status": "FAILED_PRECONDITION" } }
-  ```
-
-  The panel then spins for ever. This is the same wall as `timedtext`, one door further in: the
-  click is not the problem, and no selector fixes it, because the page's own request is being
-  refused. Confirmed by reading the guest webview's network directly.
-
-Things that were tried and did not move it: warming the session on the home page first; a fresh
-persistent partition; presenting a plain Chrome user agent instead of Obsidian's. The user agent
-change is kept anyway — Obsidian's string carries `obsidian/…` and `Electron/…` tokens that have
-no business in an ordinary request — but it is not the fix, and one run that appeared to succeed
-under it did not reproduce.
-
-So: **2 of 7 videos**, and the boundary is which panel variant YouTube serves rather than
-anything in this code. Worth re-measuring occasionally — the split may move, and heavy testing
-from one address may itself attract stricter gating.
 
 ## Using it from Democratised Read It Later
 

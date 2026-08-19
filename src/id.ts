@@ -59,6 +59,17 @@ export function watchUrl(id: string): string {
 	return `https://www.youtube.com/watch?v=${id}&hl=en`;
 }
 
+/**
+ * The lightest youtube.com document that still carries an InnerTube key.
+ *
+ * The caption request is same-origin rather than page-specific, so it does not need the watch
+ * page — and not loading one saves a couple of megabytes of markup and a video that would
+ * otherwise start buffering.
+ */
+export function homeUrl(): string {
+	return "https://www.youtube.com/?hl=en";
+}
+
 export function isVideoUrl(input: string): boolean {
 	return videoIdFrom(input) !== undefined;
 }
