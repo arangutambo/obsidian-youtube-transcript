@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-youtube-transcript",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Read a YouTube transcript out of the page itself, from inside Obsidian desktop, using trusted Electron input.",
 	"type": "module",
 	"main": "./dist/index.js",
